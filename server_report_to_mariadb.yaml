@@ -1,0 +1,131 @@
+---
+- name: Generate Server Report and Save to MariaDB
+  hosts: ubuntu
+  gather_facts: yes
+  vars:
+    db_host: "192.168.0.72"  # MariaDB 서버 주소
+    db_port: 30006
+    db_user: "root"        # 데이터베이스 사용자 이름
+    db_password: "watchall"  # 데이터베이스 비밀번호
+    db_name: "server_report" # 데이터베이스 이름
+  tasks:
+    - name: Create report content
+      set_fact:
+        report_content: |
+          ======= SERVER REPORT =======
+          Hostname: {{ ansible_hostname }}
+          Report Date: {{ '%Y-%m-%dT%H:%M:%S' | strftime() }}
+          ==================================
+
+    - name: CPU 사용률 점검
+      shell: "mpstat"
+      register: cpu_usage
+    - name: Append CPU 사용률 to report
+      set_fact:
+        report_content: |
+          {{ report_content }}
+          ### CPU 사용률 ###
+          {{ cpu_usage.stdout }}
+
+    - name: 코어별 CPU 상태 점검
+      shell: "mpstat -P ALL"
+      register: core_cpu_status
+    - name: Append 코어별 CPU 상태 to report
+      set_fact:
+        report_content: |
+          {{ report_content }}
+          ### 코어별 CPU 상태 ###
+          {{ core_cpu_status.stdout }}
+
+    - name: 메모리 사용률 점검
+      shell: "free -h"
+      register: memory_usage
+    - name: Append 메모리 사용률 to report
+      set_fact:
+        report_content: |
+          {{ report_content }}
+          ### 메모리 사용률 ###
+          {{ memory_usage.stdout }}
+
+    - name: 파일시스템 사용량 점검
+      shell: "df -h"
+      register: filesystem_usage
+    - name: Append 파일시스템 사용량 to report
+      set_fact:
+        report_content: |
+          {{ report_content }}
+          ### 파일시스템 사용량 ###
+          {{ filesystem_usage.stdout }}
+
+    - name: Disk 이중화 정상 여부
+      shell: "mdadm -D /dev/nvme0n1"
+      register: disk_redundancy
+      failed_when: false
+    - name: Append Disk 이중화 상태 to report
+      set_fact:
+        report_content: |
+          {{ report_content }}
+          ### Disk 이중화 정상 여부 ###
+          {% if 'md' in disk_redundancy.stdout %}
+          {{ disk_redundancy.stdout }}
+          {% else %}
+          WARNING: /dev/nvme0n1 is not part of a RAID or an error occurred.
+          Error Details: {{ disk_redundancy.stderr if disk_redundancy.stderr else 'No additional details' }}
+          {% endif %}
+
+    - name: Disk I/O 점검
+      shell: "iostat -x"
+      register: disk_io
+    - name: Append Disk I/O to report
+      set_fact:
+        report_content: |
+          {{ report_content }}
+          ### Disk I/O ###
+          {{ disk_io.stdout }}
+
+    - name: 시스템 로그 점검
+      shell: "dmesg"
+      register: system_logs
+    - name: Append 시스템 로그 to report
+      set_fact:
+        report_content: |
+          {{ report_content }}
+          ### 시스템 로그 ###
+          {{ system_logs.stdout }}
+
+    - name: Ping Loss 점검
+      shell: "ping -c 10 8.8.8.8"
+      register: ping_loss
+    - name: Append Ping Loss to report
+      set_fact:
+        report_content: |
+          {{ report_content }}
+          ### Ping Loss ###
+          {{ ping_loss.stdout }}
+
+    - name: NIC 이중화 점검
+      shell: "cat /proc/net/bonding/bond0"
+      register: nic_bonding
+      failed_when: false
+    - name: Append NIC 이중화 상태 to report
+      set_fact:
+        report_content: |
+          {{ report_content }}
+          ### NIC 이중화 ###
+          {% if 'Bonding Mode' in nic_bonding.stdout %}
+          {{ nic_bonding.stdout }}
+          {% else %}
+          WARNING: NIC bonding is not configured or an error occurred.
+          Error Details: {{ nic_bonding.stderr if nic_bonding.stderr else 'No bonding information found' }}
+          {% endif %}
+
+    - name: Save report to MariaDB
+      community.mysql.mysql_query:
+        login_user: "{{ db_user }}"
+        login_password: "{{ db_password }}"
+        login_host: "{{ db_host }}"
+        login_port: "{{ db_port }}"
+        login_db: "{{ db_name }}"
+        query: |
+          INSERT INTO reports (hostname, report_date, content)
+          VALUES ('{{ ansible_hostname }}', '{{ '%Y-%m-%dT%H:%M:%S' | strftime() }}', '{{ report_content | to_json | replace("'", "''") }}');
