@@ -1,6 +1,6 @@
 ---
 - name: Generate Server Report and Save to MariaDB
-  hosts: ubuntu
+  hosts: server
   gather_facts: yes
   vars:
     db_host: "192.168.0.72"  # MariaDB 서버 주소
